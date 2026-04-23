@@ -6,7 +6,8 @@
       "name": "bicep",
       "version": "0.9.1.41621",
       "templateHash": "956004028010656602"
-    }
+    },
+    "description": "Versión corregida de edgeDeploy.json con cloud-init endurecido para IoT Edge en Ubuntu 22.04"
   },
   "parameters": {
     "location": {
@@ -19,7 +20,7 @@
     "dnsLabelPrefix": {
       "type": "string",
       "metadata": {
-        "description": "Unique DNS Name for the Storage Account where the Virtual Machine's disks will be placed."
+        "description": "Unique DNS Name for the Public IP."
       }
     },
     "adminUsername": {
@@ -42,7 +43,7 @@
         "password"
       ],
       "metadata": {
-        "description": "Type of authentication to use on the Virtual Machine. SSH key is recommended."
+        "description": "Type of authentication to use on the Virtual Machine."
       }
     },
     "vmSize": {
@@ -56,7 +57,7 @@
       "type": "string",
       "defaultValue": "22_04-lts",
       "metadata": {
-        "description": "The Ubuntu version for the VM. This will pick a fully patched image of this given Ubuntu version."
+        "description": "The Ubuntu version for the VM."
       }
     },
     "deviceConnectionString": {
@@ -209,7 +210,7 @@
           "computerName": "[variables('vmName')]",
           "adminUsername": "[parameters('adminUsername')]",
           "adminPassword": "[parameters('adminPasswordOrKey')]",
-          "customData": "[base64(concat('#cloud-config\n\napt:\n  preserve_sources_list: true\n  sources:\n    msft.list:\n      source: \"deb https://packages.microsoft.com/ubuntu/22.04/prod jammy main\"\n      key: |\n        -----BEGIN PGP PUBLIC KEY BLOCK-----\n        Version: GnuPG v1.4.7 (GNU/Linux)\n\n        mQENBFYxWIwBCADAKoZhZlJxGNGWzqV+1OG1xiQeoowKhssGAKvd+buXCGISZJwT\n        LXZqIcIiLP7pqdcZWtE9bSc7yBY2MalDp9Liu0KekywQ6VVX1T72NPf5Ev6x6DLV\n        7aVWsCzUAF+eb7DC9fPuFLEdxmOEYoPjzrQ7cCnSV4JQxAqhU4T6OjbvRazGl3ag\n        OeizPXmRljMtUUttHQZnRhtlzkmwIrUivbfFPD+fEoHJ1+uIdfOzZX8/oKHKLe2j\n        H632kvsNzJFlROVvGLYAk2WRcLu+RjjggixhwiB+Mu/A8Tf4V6b+YppS44q8EvVr\n        M+QvY7LNSOffSO6Slsy9oisGTdfE39nC7pVRABEBAAG0N01pY3Jvc29mdCAoUmVs\n        ZWFzZSBzaWduaW5nKSA8Z3Bnc2VjdXJpdHlAbWljcm9zb2Z0LmNvbT6JATUEEwEC\n        AB8FAlYxWIwCGwMGCwkIBwMCBBUCCAMDFgIBAh4BAheAAAoJEOs+lK2+EinPGpsH\n        /32vKy29Hg51H9dfFJMx0/a/F+5vKeCeVqimvyTM04C+XENNuSbYZ3eRPHGHFLqe\n        MNGxsfb7C7ZxEeW7J/vSzRgHxm7ZvESisUYRFq2sgkJ+HFERNrqfci45bdhmrUsy\n        7SWw9ybxdFOkuQoyKD3tBmiGfONQMlBaOMWdAsic965rvJsd5zYaZZFI1UwTkFXV\n        KJt3bp3Ngn1vEYXwijGTa+FXz6GLHueJwF0I7ug34DgUkAFvAs8Hacr2DRYxL5RJ\n        XdNgj4Jd2/g6T9InmWT0hASljur+dJnzNiNCkbn9KbX7J/qK1IbR8y560yRmFsU+\n        NdCFTW7wY0Fb1fWJ+/KTsC4=\n        =J6gs\n        -----END PGP PUBLIC KEY BLOCK-----\npackage_update: true\npackages:\n  - moby-cli\n  - moby-engine\nruncmd:\n  - systemctl enable --now docker\n  - |\n      set -euxo pipefail\n      exec > >(tee -a /var/log/iotedge-bootstrap.log) 2>&1\n\n      until systemctl is-active --quiet docker; do\n        systemctl start docker || true\n        sleep 3\n      done\n\n      export DEBIAN_FRONTEND=noninteractive\n      apt-get update\n      apt-get install -y aziot-edge\n\n      dcs=\"', variables('dcs'), '\"\n      if [ -n \"$dcs\" ]; then\n        iotedge config mp --connection-string \"$dcs\"\n        iotedge config apply\n      fi\n\n      iotedge system status || true\n'))]",
+          "customData": "[base64(concat('#cloud-config\nwrite_files:\n  - path: /etc/apt/sources.list.d/microsoft-prod.list\n    content: |\n      deb [arch=amd64] https://packages.microsoft.com/ubuntu/22.04/prod jammy main\n  - path: /usr/local/bin/install-iotedge.sh\n    permissions: ''0755''\n    content: |\n      #!/bin/bash\n      set -eux\n      exec > >(tee -a /var/log/iotedge-install.log) 2>&1\n      echo \"[iotedge-install] Starting at $(date)\"\n      export DEBIAN_FRONTEND=noninteractive\n\n      # 1. Import Microsoft GPG key to modern keyring location\n      curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg\n      chmod 644 /usr/share/keyrings/microsoft-prod.gpg\n\n      # 2. Overwrite repo file with signed-by clause\n      echo \"deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/22.04/prod jammy main\" > /etc/apt/sources.list.d/microsoft-prod.list\n\n      # 3. Update apt with retries (cloud-init / unattended-upgrades may hold the lock)\n      for i in 1 2 3 4 5; do\n        if apt-get update -y; then break; fi\n        echo \"[iotedge-install] apt-get update failed, retry $i\"\n        sleep 10\n      done\n\n      # 4. Install moby (container engine) and wait for daemon\n      apt-get install -y moby-engine moby-cli\n      systemctl enable --now docker\n      for i in $(seq 1 30); do\n        if systemctl is-active --quiet docker && docker info >/dev/null 2>&1; then\n          echo \"[iotedge-install] docker is up\"\n          break\n        fi\n        echo \"[iotedge-install] waiting for docker ($i/30)\"\n        sleep 3\n      done\n\n      # 5. Install aziot-edge\n      apt-get install -y aziot-edge defender-iot-micro-agent-edge || apt-get install -y aziot-edge\n\n      # 6. Provision with device connection string if provided\n      DCS=\"',variables('dcs'),'\"\n      if [ -n \"$DCS\" ]; then\n        iotedge config mp --connection-string \"$DCS\" --force\n        iotedge config apply\n      fi\n\n      echo \"[iotedge-install] Finished at $(date)\"\n      iotedge system status || true\n      iotedge check || true\nruncmd:\n  - [ bash, -lc, \"/usr/local/bin/install-iotedge.sh >> /var/log/iotedge-install.log 2>&1\" ]\n'))]",
           "linuxConfiguration": "[if(equals(parameters('authenticationType'), 'password'), json('null'), variables('linuxConfiguration'))]"
         },
         "storageProfile": {
